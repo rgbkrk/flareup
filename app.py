@@ -13,6 +13,8 @@ from tornado.log import app_log
 from tornado.httpclient import HTTPRequest, HTTPError, AsyncHTTPClient
 from tornado.httputil import url_concat
 
+AsyncHTTPClient.configure("tornado.curl_httpclient.CurlAsyncHTTPClient")
+
 class CloudFlare():
     cloudflare_api_url = "https://api.cloudflare.com/client/v4"
 
@@ -25,26 +27,35 @@ class CloudFlare():
             "X-Auth-Email": self.email,
         } 
 
-        AsyncHTTPClient.configure("tornado.curl_httpclient.CurlAsyncHTTPClient",
-                                  defaults=dict(headers=self.default_headers,
-                                                user_agent="rgbkrk/flareup"))
+        self.async_http_client = AsyncHTTPClient(force_instance=True,
+                                           defaults=dict(user_agent="rgbkrk/flareup"))
+                                                
 
-        self.http_client = AsyncHTTPClient()
+    def fetch(self, request, callback=None, raise_error=True, **kwargs):
+        '''Sets up the auth headers as necessary'''
+        for default_header in self.default_headers:
+            if default_header not in request.headers:
+                request.headers[default_header] = self.default_headers[default_header]
+
+        app_log.debug("CloudFlare API request: {}".format(request))
+
+        return self.async_http_client.fetch(request, callback=callback,
+                                            raise_error=raise_error,
+                                            kwargs=kwargs)
 
 class Zone():
     def __init__(self, cloud_flare, zone="ipython.org"):
         self.cf = cloud_flare
         self.zone = zone
 
-        self.http_client = cloud_flare
-
         self.zone_id = self.acquire_zone_id()
         app_log.info("Acquired zone ID {} for {}".format(self.zone_id, zone))
 
     def acquire_zone_id(self):
-        # Just be blocking for now
         zones_resp = requests.get(self.cf.cloudflare_api_url + "/zones",
-                headers=self.cf.default_headers).json()
+                                  headers=self.cf.default_headers).json()
+
+        app_log.debug(zones_resp)
         zones = zones_resp['result']
         named_zones = {zone['name']: zone['id'] for zone in zones}
         zone_id = named_zones[self.zone]
@@ -56,12 +67,9 @@ class Zone():
 
         full_url = url_concat(url, dict(type="A", name=domain))
 
-        req = HTTPRequest(full_url,
-                          method="GET",
-                          headers=self.cf.default_headers,
-        )
+        req = HTTPRequest(full_url)
 
-        resp = yield self.cf.http_client.fetch(req)
+        resp = yield self.cf.fetch(req)
 
         dns_response = json.loads(resp.body.decode('utf8', 'replace'))
 
@@ -90,14 +98,18 @@ class FlareWatch():
     @gen.coroutine
     def health_check(self):
         app_log.info("Performing Health Check!")
-        records = yield self.zone.list_dns_records(self.main_domain)
+        main_records = yield self.zone.list_dns_records(self.main_domain)
+        drain_records = yield self.zone.list_dns_records(self.drain_domain)
 
-        for record in records:
+        to_drain = []
+        to_main = []
+
+        for record in main_records:
             try:
                 ip = record['content']
                 resp = yield self.http_client.fetch(ip)
-                app_log.info(resp)
-            except httpclient.HTTPError as e:
+                app_log.debug(resp)
+            except HTTPError as e:
                 # HTTPError is raised for non-200 responses; the response
                 # can be found in e.response.
                 app_log.error(e)
