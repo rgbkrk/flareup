@@ -76,8 +76,6 @@ class Zone():
 
         records = dns_response['result']
 
-        assert (set([record['name'] for record in records]) == set([domain]))
-
         return records
 
 class FlareWatch():
