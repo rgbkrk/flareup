@@ -1,11 +1,13 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import json
 import os
 
 import requests
 
 import tornado
+import tornado.options
 from tornado import gen, ioloop
 from tornado.log import app_log
 from tornado.httpclient import HTTPRequest, HTTPError, AsyncHTTPClient
@@ -31,10 +33,13 @@ class FlareWatch():
             "X-Auth-Email": cloudflare_email,
         }
 
+        self.http_client = AsyncHTTPClient()
+
         # Ensure we have the zone ID first
         self.zone_id = self.acquire_zone_id()
         app_log.info("Acquire zone ID {} for domain {}".format(self.zone_id,
             self.domain))
+
 
     def acquire_zone_id(self):
         zones_resp = requests.get(self.cloudflare_api_url + "/zones",
@@ -44,17 +49,38 @@ class FlareWatch():
         zone_id = named_zones[self.zone]
         return zone_id
 
+    @gen.coroutine
     def list_dns_records(self):
         url = self.cloudflare_api_url + "/zones/{}/dns_records".format(self.zone_id)
-        records_resp = requests.get(url, params=dict(type="A", name=self.domain),
-                                    headers=self.default_headers).json()
-        records = records_resp['result']
 
-        assert set([record['name'] for record in records]) == set([self.domain])
+        full_url = url_concat(url, dict(type="A", name=self.domain))
 
-        return records
+        req = HTTPRequest(full_url,
+                          method="GET",
+                          headers=self.default_headers,
+        )
 
+        resp = yield self.http_client.fetch(req)
 
+        dns_response = json.loads(resp.body.decode('utf8', 'replace'))
+
+        records = dns_response['result']
+        app_log.info(records)
+
+        assert (set([record['name'] for record in records]) == set([self.domain]))
+
+        yield records
+
+    @gen.coroutine
+    def health_check(self):
+        app_log.info("Performing Health Check!")
+        #records = yield self.list_dns_records()
+        
+
+        #responses = yield [self.http_client.fetch(record['content']) for record in records]
+        # record['id']
+
+        #app_log.info(responses)
 
 
 def main():
@@ -64,15 +90,17 @@ def main():
 
     cf = FlareWatch(cloudflare_email, cloudflare_api_key)
 
-    records = cf.list_dns_records()
+    app_log.info("Go time")
+    io_loop = ioloop.IOLoop.instance()
 
-    for record in records:
-        print(record)
-        print(record['content'])
-        print(record['id'])
-        #url = cloudflare_api_url + "/zones/{}/dns_records/{}".format(zone_id, record_id)
-        #records_resp = requests.get(url, params=dict(type="A", name=domain),
-        #                            headers=headers).json()
+    io_loop.add_callback(cf.health_check)
+
+    io_loop.start()
+    health_check = ioloop.PeriodicCallback(cf.health_check, 1000*30, io_loop=io_loop)
+    health_check.start()
+
+    app_log.info("All set and ready supposedly")
 
 if __name__ == "__main__":
+    tornado.options.parse_command_line()
     main()
