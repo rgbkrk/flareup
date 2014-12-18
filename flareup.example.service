@@ -1,0 +1,25 @@
+[Unit]
+Description=FlareUp
+
+Requires=docker.service
+Requires=etcd.service
+
+After=docker.service
+After=etcd.service
+
+[Service]
+User=core
+
+Restart=always
+TimeoutStartSec=0
+ExecStartPre=-/usr/bin/docker kill flareup
+ExecStartPre=-/usr/bin/docker rm flareup
+ExecStartPre=/usr/bin/docker pull rgbkrk/flareup
+ExecStart=/usr/bin/docker run --name flareup \
+             -e CLOUDFLARE_EMAIL=projectjupyter@gmail.com \
+             -e CLOUDFLARE_API_KEY=<cloud_flare_api_key> \
+             -e STATUS_PAGE_API_KEY=<status_page_api_key> \
+             -e STATUS_PAGE_PAGE_ID=fzcq6v7wcg65 \
+             -e STATUS_PAGE_METRIC_ID=pxzhrhl9167z \
+             rgbkrk/flareup
+ExecStop=/usr/bin/docker stop flareup
