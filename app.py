@@ -123,6 +123,7 @@ class FlareWatch():
 
             except HTTPError as e:
                 app_log.error(e)
+                to_drain.append(ip)
                 
         # Log to statuspage
         if self.status_page is not None:
@@ -182,8 +183,6 @@ def main(health_check_secs=60):
     health_check.start()
 
     io_loop.start()
-
-    app_log.info("All set and ready supposedly")
 
 if __name__ == "__main__":
     tornado.options.parse_command_line()
