@@ -3,6 +3,7 @@
 
 import json
 import os
+import time
 
 import requests
 
@@ -84,7 +85,8 @@ class FlareWatch():
     def __init__(self, cloudflare_email, cloudflare_api_key,
                  zone="ipython.org",
                  main_domain="nbviewer.ipython.org",
-                 drain_domain="nbviewer-drain.ipython.org"):
+                 drain_domain="nbviewer-drain.ipython.org",
+                 status_page=None):
 
         self.cloud_flare = CloudFlare(cloudflare_email, cloudflare_api_key)
         self.main_domain = main_domain
@@ -94,6 +96,8 @@ class FlareWatch():
 
         self.http_client = AsyncHTTPClient()
 
+        self.status_page = status_page
+
 
     @gen.coroutine
     def health_check(self):
@@ -101,25 +105,73 @@ class FlareWatch():
         main_records = yield self.zone.list_dns_records(self.main_domain)
         drain_records = yield self.zone.list_dns_records(self.drain_domain)
 
+        app_log.info("{} in main, {} in drain".format(len(main_records), len(drain_records)))
+
         to_drain = []
         to_main = []
+
+        totals = 0.0
 
         for record in main_records:
             try:
                 ip = record['content']
                 resp = yield self.http_client.fetch(ip)
                 app_log.debug(resp)
-            except HTTPError as e:
-                # HTTPError is raised for non-200 responses; the response
-                # can be found in e.response.
-                app_log.error(e)
 
+                # Total is in seconds, convert to ms
+                totals += resp.time_info['total']*1000
+
+            except HTTPError as e:
+                app_log.error(e)
+                
+        # Log to statuspage
+        if self.status_page is not None:
+            average_response = ( totals/len(main_records) )
+            self.status_page.report(time.time(), average_response)
+            app_log.info("Average Response: {} ms".format(average_response))
+
+class StatusPage():
+
+    api_url = "https://api.statuspage.io"
+    def __init__(self, api_key, page_id, metric_id):
+        self.api_key = api_key
+        self.page_id = page_id
+
+        # TODO: Make this generic since we could report multiple metrics
+        self.default_metric_id = metric_id
+
+        self.default_headers = {
+            "Content-Type":"application/json",
+            "Authorization": "OAuth {}".format(self.api_key)
+        }
+
+        self.async_http_client = AsyncHTTPClient(force_instance=True,
+                                                 defaults=dict(user_agent="rgbkrk/flareup"))
+
+    def report(self, timestamp, value, metric_id=None):
+        if metric_id is None:
+            metric_id = self.default_metric_id
+
+        endpoint = (self.api_url + "/v1/pages/{}/metrics/{}/data.json").format(
+                    self.page_id, metric_id)
+
+        resp = requests.post(endpoint, headers=self.default_headers,
+                            json={'data':{'timestamp':timestamp, 'value':value}})
+
+        app_log.debug(resp.content)
 
 def main(health_check_secs=60):
     cloudflare_email = os.environ["CLOUDFLARE_EMAIL"]
     cloudflare_api_key = os.environ["CLOUDFLARE_API_KEY"]
 
-    cf = FlareWatch(cloudflare_email, cloudflare_api_key)
+    status_page_api_key = os.environ["STATUS_PAGE_API_KEY"]
+    status_page_page_id = os.environ["STATUS_PAGE_PAGE_ID"]
+    status_page_metric_id = os.environ["STATUS_PAGE_METRIC_ID"]
+
+    status_page = StatusPage(status_page_api_key, status_page_page_id, status_page_metric_id)
+
+    cf = FlareWatch(cloudflare_email, cloudflare_api_key,
+                    status_page=status_page)
 
     app_log.info("Go time")
     io_loop = ioloop.IOLoop.instance()
