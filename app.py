@@ -108,7 +108,8 @@ class FlareWatch():
         to_drain = []
         to_main = []
 
-        totals = 0.0
+        total = 0.0
+        response_times = []
 
         for record in main_records:
             try:
@@ -117,7 +118,9 @@ class FlareWatch():
                 app_log.debug(resp)
 
                 # Total is in seconds, convert to ms
-                totals += resp.time_info['total']*1000
+                record_total = resp.time_info['total']*1000
+                total += record_total
+                response_times.append(record_total)
 
             except HTTPError as e:
                 app_log.error(e)
@@ -125,19 +128,27 @@ class FlareWatch():
                 
         # Log to statuspage
         if self.status_page is not None:
-            average_response = ( totals/len(main_records) )
-            self.status_page.report(time.time(), average_response)
+            average_response = ( total/len(main_records) )
             app_log.info("Average Response: {} ms".format(average_response))
+
+            self.status_page.report(average_response, 
+                                    metric_id=self.status_page.metric_ids['average response'])
+            self.status_page.report(len(main_records),
+                                    metric_id=self.status_page.metric_ids['active nodes'])
+            self.status_page.report(max(response_times),
+                                    metric_id=self.status_page.metric_ids['max response'])
+            self.status_page.report(min(response_times),
+                                    metric_id=self.status_page.metric_ids['min response'])
+            self.status_page.report(len(to_drain),
+                                    metric_id=self.status_page.metric_ids['unresponsive nodes'])
 
 class StatusPage():
 
     api_url = "https://api.statuspage.io"
-    def __init__(self, api_key, page_id, metric_id):
+    def __init__(self, api_key, page_id, metric_ids):
         self.api_key = api_key
         self.page_id = page_id
-
-        # TODO: Make this generic since we could report multiple metrics
-        self.default_metric_id = metric_id
+        self.metric_ids = metric_ids
 
         self.default_headers = {
             "Content-Type":"application/json",
@@ -147,9 +158,9 @@ class StatusPage():
         self.async_http_client = AsyncHTTPClient(force_instance=True,
                                                  defaults=dict(user_agent="rgbkrk/flareup"))
 
-    def report(self, timestamp, value, metric_id=None):
-        if metric_id is None:
-            metric_id = self.default_metric_id
+    def report(self, value, metric_id, timestamp=None):
+        if timestamp is None:
+            timestamp = time.time()
 
         endpoint = (self.api_url + "/v1/pages/{}/metrics/{}/data.json").format(
                     self.page_id, metric_id)
@@ -165,9 +176,16 @@ def main(health_check_secs=60):
 
     status_page_api_key = os.environ["STATUS_PAGE_API_KEY"]
     status_page_page_id = os.environ["STATUS_PAGE_PAGE_ID"]
-    status_page_metric_id = os.environ["STATUS_PAGE_METRIC_ID"]
 
-    status_page = StatusPage(status_page_api_key, status_page_page_id, status_page_metric_id)
+    metric_ids = {}
+    metric_ids['active nodes'] = os.environ["ACTIVE_NODES_METRIC_ID"]
+    metric_ids['unresponsive nodes'] = os.environ["UNRESPONSIVE_NODES_METRIC_ID"]
+    metric_ids['average response'] = os.environ["AVERAGE_RESPONSE_METRIC_ID"]
+    metric_ids['max response'] = os.environ["MAX_RESPONSE_METRIC_ID"]
+    metric_ids['min response'] = os.environ["MIN_RESPONSE_METRIC_ID"]
+
+    status_page = StatusPage(status_page_api_key, status_page_page_id,
+                             metric_ids=metric_ids)
 
     cf = FlareWatch(cloudflare_email, cloudflare_api_key,
                     status_page=status_page)
